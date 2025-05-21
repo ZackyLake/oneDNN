@@ -69,6 +69,13 @@
 #endif
 #endif
 
+// for debug trace in GCC
+#include <map>
+#if !defined(NDEBUG) && defined(__GNUC__) && !(defined(__ANDROID__) || defined(ANDROID))
+#include <execinfo.h>
+#include <sstream>
+#endif
+
 #include "xbyak_aarch64_err.h"
 
 namespace Xbyak_aarch64 {

@@ -203,8 +203,38 @@ public:
     size_ = 0;
   }
 
+#if !defined(NDEBUG) && defined(__GNUC__) && !(defined(__ANDROID__) || defined(ANDROID))
+  std::map<size_t, std::string> debug_traces;
+  void debug_trace() {
+    static bool enable_trace = std::getenv("ONEDNN_JIT_DUMP") && atoi(std::getenv("ONEDNN_JIT_DUMP")) != 0;
+    if (!enable_trace)
+      return;
+
+    void *array[8];
+    int size = backtrace(array, 8);
+    char **strings = backtrace_symbols(array, size);
+    std::stringstream ss;
+    // skip first 2 frame (backtrace,trace_code)
+    for(int i = 2; i < size; ++i) ss << "," << strings[i];
+    auto offset = getSize();
+    if (debug_traces.count(offset)) {
+      debug_traces[offset] += ss.str();
+    } else {
+      debug_traces[offset] = ss.str();
+    }
+    free(strings);
+  }
+  std::map<size_t, std::string> get_debug_traces() const {
+    return debug_traces;
+  }
+#else
+  void debug_trace() {}
+  std::map<size_t, std::string> get_debug_traces() const { return {}; }
+#endif
+
   // write 4 byte data
   void dd(uint32_t code) {
+    debug_trace();
     if (size_ >= maxSize_) {
       if (type_ == AUTO_GROW) {
         growMemory();
