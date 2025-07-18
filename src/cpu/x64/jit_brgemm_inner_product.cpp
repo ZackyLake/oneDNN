@@ -15,6 +15,9 @@
 *******************************************************************************/
 
 #include <tuple>
+#include <chrono>
+#include <mutex>
+#include <map>
 
 #include "common/c_types_map.hpp"
 #include "common/dnnl_thread.hpp"
@@ -29,6 +32,44 @@
 #include "cpu/x64/injectors/jit_uni_binary_injector.hpp"
 #include "cpu/x64/jit_brgemm_inner_product.hpp"
 #include "cpu/x64/jit_transpose_utils.hpp"
+
+
+static std::map<int32_t, std::pair<uint64_t, uint32_t>>& GetTimeMap() noexcept {
+    struct Dummy {
+        std::map<int32_t, std::pair<uint64_t, uint32_t>> TimeMap;
+        ~Dummy() { 
+            printf("Time recordings:\n");
+            for (const auto& [id, entry] : TimeMap) {
+                printf("[%4d]: [%7u] => [%12" PRIu64 "]ns\n", id, entry.second, entry.first);
+            }
+        }
+    };
+    static Dummy dummy;
+    return dummy.TimeMap;
+}
+
+struct StageTimer
+{
+    std::chrono::high_resolution_clock::time_point Start;
+    int32_t Line;
+    StageTimer(int32_t line) noexcept
+        : Start(std::chrono::high_resolution_clock::now()), Line(line) {}
+    ~StageTimer() {
+        const auto tend = std::chrono::high_resolution_clock::now();
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                tend - Start)
+                                .count();
+        static std::mutex mtx;
+        std::unique_lock lock(mtx);
+        auto &timeMap = GetTimeMap();
+        auto &entry = timeMap.try_emplace(Line,
+                                     std::pair<uint64_t, uint32_t> {0u, 0u})
+                              .first->second;
+        entry.first += ns;
+        entry.second++;
+    }
+};
+#define LogTime(name) const StageTimer name(__LINE__)
 
 namespace dnnl {
 namespace impl {
@@ -75,6 +116,7 @@ void copy_data_chunk(ker_type &ker, char *tr_data, const char *data,
 template <cpu_isa_t isa>
 status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
         const exec_ctx_t &ctx) const {
+    LogTime(tfwd);
     auto src = CTX_IN_MEM(const char *, DNNL_ARG_SRC);
     auto weights = CTX_IN_MEM(const char *, DNNL_ARG_WEIGHTS);
     auto bias = CTX_IN_MEM(const char *, DNNL_ARG_BIAS);
@@ -157,6 +199,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
         int vec_loop_end = rnd_dn(jbgp.ic, jbgp.src_quant_group_size);
 
         parallel_nd(jbgp.mb, [&](int mb) {
+            LogTime(twdq);
             src_quantization_runtime_params_t rt_params = {};
             rt_params.src_ptr = src_ptr + mb * jbgp.ic;
             rt_params.qsrc_ptr = qsrc_ptr + mb * jbgp.ic;
@@ -238,6 +281,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                              int osb_s, int ocb, int ocb_s, int icc, int icc_s,
                              int kd, int kh, int kw, bool copy_buffer_a,
                              int &prev_ker_idx) {
+        LogTime(tker);
         const int cur_ocb = ocb + ocb_s;
         const int cur_osb = osb + osb_s;
         const int cur_icc = icc + icc_s;
@@ -349,6 +393,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
         // = get_blk_off(weights_d, jbgp.wei_dt, cur_ocb, 0);
 
         if (copy_buffer_a) {
+            LogTime(tcpa);
             assert(!jbgp.is_bf32);
             auto src_ptr = src
                     + blk_off(src_d, n, ic, kd, kh, kw)
@@ -373,6 +418,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                 const dim_t wei_offset = (wei_cur_ocb
                         + wei_ic_stride * (icb + b * ic_blocks_per_batch));
                 if (jbgp.weights_compressed) {
+                    LogTime(twdc);
                     using comp_tile_len_type = int;
                     const comp_tile_len_type *compressed_tile_lengths_ptr
                             = reinterpret_cast<const comp_tile_len_type *>(weights);
@@ -405,6 +451,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                     auto wei_scales_ptr = wei_scales + wei_scales_oc_stride * oc * wei_scales_dt_size;
 
                     if (jbgp.with_grouped_weights_decompression) {
+                        LogTime(twdc);
                         weights_decompression_runtime_params_t rt_params = {};
                         auto ic_size = jbgp.ic_block * ic_blocks_per_batch / ic_internal_block;
                         auto wei_scales_ic_group_size_local = jbgp.wei_scales_ic_group_size / ic_internal_block;
@@ -426,6 +473,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                             (*brg_weights_decomp_kernel_)(&rt_params);
                         }
                     } else {
+                        LogTime(twdc);
                         weights_decompression_runtime_params_t rt_params = {};
                         rt_params.weights_ptr = weights_ptr;
                         rt_params.decomp_buffer_ptr = decomp_buf;
@@ -458,6 +506,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
 
             if (jbgp.nthr_ic_b == 1 && are_post_ops_applicable
                     && is_last_ic_chunk && !is_ic_tail && last_spatial_slice) {
+                LogTime(tpost);
                 void *scratch = is_amx
                         ? static_cast<void *>(wsp_tile)
                         : (jbgp.req_s8s8_compensation ? static_cast<void *>(
@@ -477,6 +526,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                         scratch, nullptr, wei_scales + wei_scales_offset, wei_zero_points + wei_zero_points_offset,
                         src_dscales + src_scales_offset, src_grouped_sum + src_grouped_sum_offset, ic);
             } else {
+                LogTime(texec);
                 brgemm_kernel_execute(brg_kernel, gemm_batch, addr_batch,
                         (void *)ptr_C, is_amx ? (void *)wsp_tile : nullptr, nullptr, wei_scales + wei_scales_offset, wei_zero_points + wei_zero_points_offset,
                         src_dscales + src_scales_offset, src_grouped_sum + src_grouped_sum_offset, ic);
@@ -484,6 +534,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
         }
 
         if (is_ic_tail) {
+            LogTime(ttail);
             assert(!jbgp.use_buffer_a);
             auto use_init_ker = (kernel_init && gemm_batch == 0);
             int brg_ker_ic_tail_idx
@@ -515,6 +566,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                 auto wei_scales_ptr = wei_scales + wei_scales_oc_stride * oc * wei_scales_dt_size;
 
                 if (jbgp.with_grouped_weights_decompression) {
+                    LogTime(ttwdc);
                     weights_decompression_runtime_params_t rt_params = {};
                     auto ic_size = (jbgp.ic - (ic + ic_block * jbgp.ic_block)) / ic_internal_block;
                     auto wei_scales_ic_group_size_local = jbgp.wei_scales_ic_group_size / ic_internal_block;
@@ -536,6 +588,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                         (*brg_weights_decomp_kernel_)(&rt_params);
                     }
                 } else {
+                    LogTime(ttwdc);
                     weights_decompression_runtime_params_t rt_params = {};
                     rt_params.weights_ptr = weights_ptr;
                     rt_params.decomp_buffer_ptr = decomp_buf;
@@ -567,6 +620,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
             auto ptr_C = use_c_buffer ? c_buffer : ptr_D;
             if (jbgp.nthr_ic_b == 1 && are_post_ops_applicable
                     && last_spatial_slice) {
+                LogTime(ttpost);
                 void *scratch = is_amx
                         ? static_cast<void *>(wsp_tile)
                         : (jbgp.req_s8s8_compensation ? static_cast<void *>(
@@ -585,6 +639,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                         (void *)ptr_C, (void *)ptr_D, post_ops_data, scratch, nullptr, wei_scales + wei_scales_offset, wei_zero_points + wei_zero_points_offset,
                         src_dscales + src_scales_offset, src_grouped_sum + src_grouped_sum_offset, ic);
             } else {
+                LogTime(ttexec);
                 brgemm_kernel_execute(brg_kernel_ic_tail, 1, addr_batch,
                         (void *)ptr_C, is_amx ? (void *)wsp_tile : nullptr, nullptr, wei_scales + wei_scales_offset, wei_zero_points + wei_zero_points_offset,
                         src_dscales + src_scales_offset, src_grouped_sum + src_grouped_sum_offset, ic);
@@ -616,6 +671,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
     const int num_threads
             = work_amount == 1 && jbgp.nthr_ic_b <= 1 ? 1 : jbgp.nthr;
     parallel(num_threads, [&](const int ithr, const int nthr) {
+        LogTime(tpar);
         int nthr_ic {1}, nthr_oc_mb {1}, ithr_ic {0}, ithr_oc_mb {0};
         bool ok = init_thr_groups(
                 ithr, nthr, nthr_ic, nthr_oc_mb, ithr_ic, ithr_oc_mb);
@@ -771,6 +827,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
         };
 
         parallel(num_threads, [&](const int ithr, const int nthr) {
+            LogTime(tpar);
             int nthr_ic {1}, nthr_oc_mb {1}, ithr_ic {0}, ithr_oc_mb {0};
             bool ok = init_thr_groups(
                     ithr, nthr, nthr_ic, nthr_oc_mb, ithr_ic, ithr_oc_mb);
@@ -817,6 +874,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                         }
                     }
                     if (are_post_ops_applicable) {
+                        LogTime(tppost);
                         for (int ocb = ocb_s; ocb < ocb_e; ++ocb) {
                             const bool is_oc_tail
                                     = (jbgp.oc - ocb * jbgp.oc_block
@@ -859,6 +917,7 @@ status_t brgemm_inner_product_fwd_t<isa>::execute_forward(
                                     nullptr, nullptr, true /* skip_accm */, 1,
                                     false, false, dst_scales};
 
+                            LogTime(tppost);
                             brgemm_kernel_execute_postops(brg_kernel, 0,
                                     nullptr, (void *)ptr_C, (void *)ptr_D,
                                     post_ops_data, scratch);
