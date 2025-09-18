@@ -35,6 +35,11 @@
 #define CL_DEVICE_IP_VERSION_INTEL 0x4250
 #endif
 
+namespace dnnl::impl
+{
+std::vector<uint8_t>*& GetCurRecBin() noexcept;
+}
+
 namespace NGEN_NAMESPACE {
 
 
@@ -212,6 +217,8 @@ cl_kernel OpenCLCodeGenerator<hw>::getKernel(cl_context context, cl_device_id de
     std::vector<uint8_t> binary;
 
     auto code = this->getCode();
+    if (const auto ptr = dnnl::impl::GetCurRecBin(); ptr)
+        *ptr = code;
 
     for (bool defaultFormat : {true, false}) {
         bool legacy = defaultFormat ^ zebinFirst;

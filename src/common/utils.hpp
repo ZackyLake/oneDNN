@@ -943,6 +943,30 @@ public:
     }
 };
 
+
+struct TimeCounter
+{
+    float Time = 0, MaxTime = 0;
+    uint32_t Count = 0;
+    void Add(float time) noexcept
+    {
+        Time += time;
+        MaxTime = std::max(MaxTime, time);
+        Count++;
+    }
+};
+inline std::vector<uint8_t>*& GetCurRecBin() noexcept
+{
+    static thread_local std::vector<uint8_t>* ptr = nullptr;
+    return ptr;
+}
+inline bool CheckEnv(const char* key, std::string_view value) noexcept
+{
+    const auto ret = std::getenv(key);
+    return ret && value == ret;
+}
+
+
 } // namespace impl
 } // namespace dnnl
 

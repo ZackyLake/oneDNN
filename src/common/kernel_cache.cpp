@@ -40,7 +40,11 @@ struct iface_t::cache_t {
 
     cache_t(int capacity) : cache_(capacity) {};
 
-    ~cache_t() = default;
+    //~cache_t() = default;
+    ~cache_t() 
+    {
+        utils::PrintCache<const char*>(cache_, "Kernel", [](const char* name) { return name; });
+    }
 
     status_t set_capacity(int capacity) {
         return cache_.set_capacity(capacity);

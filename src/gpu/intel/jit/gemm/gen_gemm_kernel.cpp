@@ -36,8 +36,11 @@ using namespace gemmstone;
 status_t gen_gemm_kernel_desc_t::create_generator(
         const compute::compute_engine_t &engine,
         compute::kernel_t &kernel) const {
+    auto rec = PutNGenRecord(primitive_kind_t::dnnl_gemm);
     gen_gemm_kernel_t kd(*this);
-    return engine.create_kernel(&kernel, &kd);
+    const auto status = engine.create_kernel(&kernel, &kd);
+    if (status == dnnl_success) rec.AssignName(kd.kernel_name());
+    return status;
 }
 
 compute::scalar_type_t gen_gemm_kernel_desc_t::scalar_type() const {

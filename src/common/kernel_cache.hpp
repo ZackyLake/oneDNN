@@ -36,6 +36,7 @@ struct key_impl_t {
 
     virtual bool compare(const key_impl_t *key_impl) const = 0;
     virtual size_t hash() const = 0;
+    const char *KernelName_ = nullptr;
 };
 
 // The kernel-cache implementation relies on the copy-constructor. This class is
