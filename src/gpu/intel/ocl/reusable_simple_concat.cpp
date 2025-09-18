@@ -33,7 +33,6 @@ static status_t normalize_reusable_simple_concat(
         reusable_simple_concat_runtime_params_t &rt_conf,
         impl::engine_t *engine, const concat_pd_t *pd,
         const normalization_t &normalize) {
-
     const memory_desc_wrapper ref_dst_mdw = *pd->dst_md();
 
     const auto concat_dim = pd->concat_dim();
@@ -324,6 +323,14 @@ static status_t init_conf_common(impl::engine_t *engine, const concat_pd_t *pd,
         reusable_simple_concat_runtime_params_t &rt_conf) {
     using namespace utils;
     const memory_desc_t &ref_dst_md = *pd->dst_md();
+    
+    static const auto FixUninit = CheckEnv("fixuninit", "true");
+    if (FixUninit)
+    {
+        for (uint32_t i = 0; i < _countof(conf.blocks); ++i)
+            conf.blocks[i] = conf.strides[i] = 0;
+        conf.bytes_per_workitem = 0;
+    }
 
     if (ref_dst_md.format_kind != format_kind::blocked) {
         return status::unimplemented;

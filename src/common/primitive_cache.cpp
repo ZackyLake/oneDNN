@@ -34,7 +34,11 @@ struct primitive_cache_t {
 
     primitive_cache_t(int capacity) : cache_(capacity) {};
 
-    ~primitive_cache_t() = default;
+    //~primitive_cache_t() = default;
+    ~primitive_cache_t() 
+    {
+        utils::PrintCache<primitive_kind_t>(cache_, "Primitive", &dnnl_prim_kind2str);
+    }
 
     status_t set_capacity(int capacity) {
         return cache_.set_capacity(capacity);

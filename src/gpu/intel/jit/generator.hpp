@@ -18,10 +18,16 @@
 #define GPU_INTEL_JIT_GENERATOR_HPP
 
 #include <memory>
+#include <deque>
+#include <map>
+#include <thread>
+#include <chrono>
+#include <fstream>
 
 #include "ngen.hpp"
 #include "ngen_emulation.hpp"
 
+#include "common/utils.hpp"
 #include "common/impl_registration.hpp"
 #include "common/nstl.hpp"
 #include "gpu/intel/compute/compute_engine.hpp"
@@ -149,6 +155,8 @@ compute::kernel_t make_kernel(gpu_primitive_t *primitive, bool register_kernel,
     auto *device_info = compute_engine->device_info();
     auto arch = convert_dnnl_arch_to_ngen(device_info->gpu_arch());
 
+    auto rec = PutNGenRecord(primitive->kind());
+
     std::unique_ptr<jit::generator_base_t> jit_kernel;
 #define CASE(gpu_arch) \
     case gpu_arch: \
@@ -167,7 +175,8 @@ compute::kernel_t make_kernel(gpu_primitive_t *primitive, bool register_kernel,
 #undef CASE
 
     if (!jit_kernel) return kernel_t();
-
+    
+    rec.AssignName(jit_kernel->kernel_name());
     status_t status = primitive->create_kernel(
             engine, &kernel, jit_kernel.get(), register_kernel);
     if (status != status::success) return kernel_t();

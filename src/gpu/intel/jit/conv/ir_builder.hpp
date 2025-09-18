@@ -37,11 +37,12 @@ namespace jit {
 class conv_ir_builder_t : public ir_builder_t {
 public:
     conv_ir_builder_t(const conv_config_t &cfg,
-            const kernel_info_t &kernel_info, const layout_t &zp_dst)
+            const kernel_info_t &kernel_info, const layout_t &zp_dst, const uint32_t slm_limit = UINT32_MAX)
         : kernel_info_(kernel_info)
         , prb_(cfg.prb())
         , cfg_(cfg)
-        , zp_dst_(zp_dst) {
+        , zp_dst_(zp_dst)
+        , slmLimit(slm_limit) {
         build();
     }
 
@@ -62,6 +63,7 @@ private:
     const conv_problem_t &prb_;
     const conv_config_t &cfg_;
     const layout_t &zp_dst_;
+    uint32_t slmLimit;
 };
 
 } // namespace jit

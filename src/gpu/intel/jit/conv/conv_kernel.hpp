@@ -61,6 +61,11 @@ conv_kernel_t<hw>::conv_kernel_t(const conv_config_t &cfg,
     , prb_(cfg.prb())
     , cfg_(cfg) {
 
+    const uint32_t max_slm_size = compute::device_info_t::max_slm_size_per_tg(
+            convert_ngen_arch_to_dnnl(hw),
+            ir_utils::safe_divide(into<int>(local_range.nelems()), exec_cfg().simd()),
+            exec_cfg().regs() > 128);
+
     set_kernel_iface(kernel_info.iface());
 
     // XXX: BWD_W does 32x32 multiplication in the inner loop which may cause
@@ -69,13 +74,16 @@ conv_kernel_t<hw>::conv_kernel_t(const conv_config_t &cfg,
     if (prb_.is_bwd_w && hw < ngen::HW::XeHPC) emu_strategy.emulate64 = true;
 
     ir_utils::debug_profiler_t profile("Conv Kernel Construction Profile");
+    auto &record = ConvRecords::New(cfg);
     // Build IR for the kernel.
-    conv_ir_builder_t builder(cfg, kernel_info, zp_dst);
+    conv_ir_builder_t builder(cfg, kernel_info, zp_dst, max_slm_size);
     const stmt_t &body = builder.stmt();
     profile.stamp("Kernel Builder");
+    record.Stamp("0Kernel Builder");
 
     alloc_manager_t alloc_mgr(body);
     profile.stamp("Alloc_Mgr Construct");
+    record.Stamp("0Alloc_Mgr Construct");
 
     setup_interface(body);
 #ifdef DNNL_DEV_MODE
@@ -88,6 +96,9 @@ conv_kernel_t<hw>::conv_kernel_t(const conv_config_t &cfg,
     convert_ir_to_ngen<ir_kernel_t<hw>>(
             body, this, &cfg_.plan().gemm_schedule.kernel_grid_walk_order());
     profile.stop("Generate Assembly");
+    record.Stamp("0Generate Assembly");
+    record.Finished = true;
+    ConvRecords::GetCurrent() = nullptr;
 
 #ifdef DNNL_DEV_MODE
     gpu_perf_no_trace() << profile;

@@ -1225,6 +1225,7 @@ public:
                     base::exec_cfg().regs() > 128);
             if (slm_size > max_slm_size) {
                 // TODO: Use status code for this check.
+                printf("@@!! nGen Failed : SLM size [%d] exceed limit [%d].\n", slm_size, max_slm_size);
                 gpu_except_not_implemented("SLM size limit is exceeded.");
             }
             elf_generator_t::requireSLM(slm_size);

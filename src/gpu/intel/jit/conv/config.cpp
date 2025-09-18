@@ -31,6 +31,10 @@
 #include "gpu/intel/jit/ir/gemm_schedule.hpp"
 #include "gpu/intel/jit/ir/tensor_config.hpp"
 
+#include <string_view>
+#include <unordered_map>
+#include <algorithm>
+
 #define VDISPATCH_CHECK(pd, engine, cond, msg, ...) \
     VCONDCHECK(primitive, create, dispatch, convolution, (cond), \
             status::unimplemented, "%s," msg, pd->info(engine), ##__VA_ARGS__)
@@ -40,6 +44,64 @@ namespace impl {
 namespace gpu {
 namespace intel {
 namespace jit {
+    
+ConvRecords::~ConvRecords() 
+{
+    while (Lock.test_and_set());
+    std::unordered_map<std::string, std::pair<TimeCounter, TimeCounter>> nonUniques;
+    std::map<std::string_view, TimeCounter, std::less<>> stageTimes;
+    std::set<std::tuple<uint32_t, uint32_t, decltype(stageTimes)::value_type*>> stageOrder;
+    std::map<std::thread::id, TimeCounter> threadTimes;
+    TimeCounter total;
+    for (auto& rec : Records)
+    {
+        auto str = rec.Config.str();
+        float totalTime = 0;
+        uint64_t lastTime[4] = {0, 0, 0, 0};
+        for (const auto& [name, time] : rec.Times)
+        {
+            const uint32_t lv = name[0] - '0';
+            const auto beginTime = lastTime[lv];
+            const auto ms = static_cast<float>(time - beginTime) / 1000.f;
+            auto [it, inserted] = stageTimes.try_emplace(name, TimeCounter{});
+            it->second.Add(ms);
+            if (inserted) stageOrder.emplace(static_cast<uint32_t>(beginTime), lv, &*it);
+            if (lv == 0)
+                totalTime += ms;
+            for (uint32_t i = lv; i < 4; ++i)
+                lastTime[i] = time;
+        }
+        threadTimes[rec.Tid].Add(totalTime);
+        auto &ct = nonUniques[str];
+        ct.first.Add(totalTime);
+        if (rec.Finished) ct.second.Add(totalTime);
+        total.Add(totalTime);
+    }
+    const auto& maxThread = std::max_element(threadTimes.begin(), threadTimes.end(), 
+        [](const auto &lhs, const auto &rhs) { return lhs.second.Time < rhs.second.Time; })->second;
+    printf("@@##Gen-Convs: Total[%8.2f]ms(max [%7.2f]ms)(@%zu) [%zu]thread Max[%8.2f]ms(@%u)\n", 
+        total.Time, total.MaxTime, Records.size(), threadTimes.size(), maxThread.Time, maxThread.Count);
+    for (const auto& [toffset, lv, entry] : stageOrder)
+    {
+        const auto& [name, ct] = *entry;
+        constexpr char padding[] = "****";
+        printf("--[%s%-*s] : [%8.2f]ms(@%3u) Avg[%8.2f]ms\n", padding + 4 - lv, 20 - lv, name.data() + 1, ct.Time, ct.Count, ct.Time / ct.Count);
+    }
+    /*
+    for (const auto& [str, cts] : nonUniques)
+    {
+        const auto &[allct, finished] = cts;
+        const bool hasUnfinished = allct.Count > finished.Count;
+        if (allct.Count > 1 || hasUnfinished)
+        {
+            printf("@@Conv: Total[%8.2f]ms(@[%u])", allct.Time, allct.Count);
+            if (hasUnfinished)
+                printf(" Finished[%8.2f]ms(@[%u])", finished.Time, finished.Count);
+            printf(" :\n%s\n\n", str.c_str());
+        }
+    }
+    */
+}
 
 // Helper functions.
 bool matches_tag_strict(const layout_t &layout, const std::string &tag) {

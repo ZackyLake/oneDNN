@@ -243,11 +243,17 @@ public:
     const stmt_t &x_reduced_store_stmt() const { return x_reduce_store_stmt_; }
 
     void build() {
+        const auto record = ConvRecords::GetCurrent();
         build_g2s();
+        if (record) record->Stamp("2Build g2s");
         build_prefetch();
+        if (record) record->Stamp("2Build prefetch");
         build_x2r_mul();
+        if (record) record->Stamp("2Build mul");
         build_c_store();
+        if (record) record->Stamp("2Build store");
         build_x_reduce_store();
+        if (record) record->Stamp("2Build reduce");
 
         // Replace dpas by dpasw when applicable.
         if (cfg_.fma_kind() == fma_kind_t::dpasw) {
@@ -260,6 +266,7 @@ public:
 
         // Assign {Atomic} for dpas(w) when applicable.
         x2r_mul_stmt_ = inject_dpas_atomic(x2r_mul_stmt_);
+        if (record) record->Stamp("2Build dpas");
     }
 
 private:
@@ -519,6 +526,13 @@ private:
             slm_reduce_builder_t slm_reduce_builder(ir_ctx_,
                     gemm_schedule.tg_grid(), c_buf, c_thr_reg_layout,
                     thr_tile_coord);
+            //uint32_t slmSize = 0;
+            //for (const auto& alloc : slm_reduce_builder.allocs())
+            //{
+            //    const auto& slma = alloc.as<alloc_t>();
+            //    if (slma.kind == alloc_kind_t::slm) slmSize += slma.size;
+            //}
+            //printf("@@##%% This conv uses k slicing: [%u]\n", slmSize);
             c_store_stmt_ = c_store_stmt_.append(slm_reduce_builder.stmt());
             c_thr_reg_layout = slm_reduce_builder.reg_layout();
             thr_tile_coord = slm_reduce_builder.thr_tile_coord();
@@ -646,10 +660,55 @@ stmt_t inject_compute_loop_label(const stmt_t &s) {
     return compute_loop_label_injector_t().mutate(s);
 }
 
-void conv_ir_builder_t::build() {
-    const auto &prb = cfg_.prb();
 
+class slm_usage_visitor_t : public ir_visitor_t 
+{
+public:
+    object_set_t<expr_t> bufSet;
+    uint32_t slmSize = 0, slmCount = 0, duplicates = 0;
+    void _visit(const alloc_t &obj) override 
+    {
+        if (obj.kind == alloc_kind_t::slm) 
+        {
+            slmCount++;
+            if (!bufSet.insert(obj.buf).second)
+                duplicates++;
+            else
+                slmSize += obj.size;
+        }
+        ir_visitor_t::_visit(obj);
+    }
+};
+
+static bool check_slm_usage(const stmt_t &stmt, uint32_t limit) noexcept 
+{
+    slm_usage_visitor_t visitor;
+    visitor.visit(stmt);
+    if (visitor.duplicates > 0)
+    {
+        printf("@@##%% slm checked [%u], get [%u] duplicates, sum usage [%u]\n", visitor.slmCount, visitor.duplicates, visitor.slmSize);
+        return true;
+    }
+    else
+    {
+        printf("@@##%% slm checked [%u], sum usage [%u]\n", visitor.slmCount, visitor.slmSize);
+        return visitor.slmSize <= limit;
+    }
+}
+
+#define CheckSLM(stmt, guard) \
+    if (const auto pass = check_slm_usage(stmt, slmLimit); guard && !pass) { \
+        printf("@@!! nGen Failed : Early Check SLM size exceed limit.\n"); \
+        gpu_except_not_implemented("SLM size limit is exceeded."); \
+    }
+
+void conv_ir_builder_t::build() {
+    static const bool EarlyCheck = CheckEnv("earlyslm", "true");
+
+    const auto &prb = cfg_.prb();
     trace_reset();
+    const auto record = ConvRecords::GetCurrent();
+
 
     std::vector<stmt_t> init_stmts;
     const auto &plan = cfg_.plan();
@@ -685,6 +744,7 @@ void conv_ir_builder_t::build() {
     expr_t b_reduction_condition;
 
     trace_stamp("GEMM Schedule");
+    if (record) record->Stamp("1GEMM Schedule");
 
     ir_context_t ir_ctx(cfg_.exec_cfg(), init_cset);
     compute_builder_t cb(cfg_, ir_ctx, kernel_info_, zp_dst_);
@@ -693,8 +753,14 @@ void conv_ir_builder_t::build() {
     cb.set_cp_buf(cp_buf);
     cb.set_x_reduce_buf(x_reduced_mem_buf);
     cb.build();
+    //CheckSLM(cb.c_store_stmt(), EarlyCheck)
+    //printf("@@##%% This conv ab slm: [%d] * [%d]\n", cb.ab_slm_size(), cfg_.slm().bufs());
+    //printf("@@##%% conv plan: ab slm: [%u], [%d], @[%d]\n",
+    //        plan.slm.has_a() ? static_cast<uint32_t>(plan.slm.a_layout.size()) : 0u,
+    //        plan.slm.has_b() ? static_cast<uint32_t>(plan.slm.b_layout.size()) : 0u, cfg_.slm().bufs());
 
     trace_stamp("Compute Builder");
+    if (record) record->Stamp("1Compute Builder");
 
     std::vector<stmt_t> allocs;
     for (int i = 0; i < kernel_info_.nargs(); i++) {
@@ -724,6 +790,7 @@ void conv_ir_builder_t::build() {
     stmt_ = inject_let_stmts(stmt_, init_stmts);
     stmt_ = inject_alloc_stmts(stmt_, allocs);
     trace_stop("Create Inital IR");
+    if (record) record->Stamp("1Create Inital IR");
 
     stmt_ = inject_external_var_let(stmt_, ir_ctx);
     stmt_ = merge_slm_buffers(stmt_, ir_ctx);
@@ -737,36 +804,55 @@ void conv_ir_builder_t::build() {
     }
     stmt_ = inject_slm_reorder(stmt_, ir_ctx, cfg_.thread_group_grid(),
             cfg_.slm() || gemm_schedule.with_thread_group_k_slicing());
+    if (record) record->Stamp("1slm");
+    //CheckSLM(stmt_, EarlyCheck)
     stmt_ = lift_buffer_offsets_in_send(stmt_, ir_ctx);
     stmt_ = simplify(stmt_, ir_ctx);
+    if (record) record->Stamp("1lift_offsets");
     stmt_ = inject_send(stmt_, ir_ctx);
+    if (record) record->Stamp("1send");
     stmt_ = split_wide_stores(stmt_, ir_ctx);
+    if (record) record->Stamp("1split_store");
     stmt_ = lift_alloc(stmt_, ir_ctx, cfg_.pipeline().reuse_headers());
+    if (record) record->Stamp("1lift_alloc");
     stmt_ = lift_send_2d_header_store(stmt_, ir_ctx);
+    if (record) record->Stamp("1lift_2d_store");
     stmt_ = hoist_send_masks(stmt_, ir_ctx, stmt_label_t::c_store(), false,
             cfg_.reserved_regs());
+    if (record) record->Stamp("1send_mask1");
     stmt_ = split_shuffle(stmt_, ir_ctx);
+    if (record) record->Stamp("1split_shuffle");
     stmt_ = fixup_if_conditions(stmt_, ir_ctx);
     stmt_ = optimize_int64_exprs(stmt_, ir_ctx);
     stmt_ = fix_int32_overflow(stmt_, ir_ctx);
+    if (record) record->Stamp("1int");
     stmt_ = eliminate_common_subexprs(
             stmt_, ir_ctx, cfg_.reserved_regs(), cfg_.slm().gmem_bufs());
+    if (record) record->Stamp("1cse");
     stmt_ = hoist_exprs(stmt_, ir_ctx, cfg_.reserved_regs());
+    if (record) record->Stamp("1exprs");
     if (cfg_.pipeline().do_unroll())
         stmt_ = loop_strength_reduce(stmt_, ir_ctx);
+    if (record) record->Stamp("1loop_reduce");
     stmt_ = optimize_alloc_let(stmt_, ir_ctx);
+    if (record) record->Stamp("1alloc_let1");
     if (cfg_.pipeline().do_unroll()) {
         stmt_ = update_loops_for_unrolling(stmt_, ir_ctx);
         stmt_ = inject_unrolling(stmt_, ir_ctx, cfg_, cb.ab_slm_size());
     }
+    if (record) record->Stamp("1unroll1");
     stmt_ = hoist_send_masks(stmt_, ir_ctx, stmt_label_t::compute_loop(), true,
             cfg_.reserved_regs());
+    if (record) record->Stamp("1send_mask2");
     stmt_ = unroll_loops(stmt_, ir_ctx);
+    if (record) record->Stamp("1unroll2");
     stmt_ = simplify(stmt_, ir_ctx);
     stmt_ = optimize_alloc_let(stmt_, ir_ctx);
+    if (record) record->Stamp("1alloc_let2");
 
     if (cfg_.hw() > ngen::HW::XeLP) stmt_ = optimize_peephole(stmt_, ir_ctx);
     stmt_ = optimize_barrier(stmt_, ir_ctx);
+    if (record) record->Stamp("1opt");
     if (cfg_.fma_kind() == fma_kind_t::dp4a) stmt_ = inject_dp4a(stmt_, ir_ctx);
     stmt_ = inject_bank_conflict_attribute(stmt_, ir_ctx);
     stmt_ = stmt_group_t::make(stmt_label_t::kernel(), stmt_);
@@ -777,6 +863,7 @@ void conv_ir_builder_t::build() {
 
     gpu_debug() << "Convolution kernel body:\n" << stmt_;
     trace_perf();
+    if (record) record->Stamp("1inject");
 }
 
 } // namespace jit

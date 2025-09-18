@@ -152,6 +152,7 @@ struct gpu_primitive_t : public gpu::primitive_t {
         auto key = std::make_shared<trivial_key_container_t<T>>(
                 params, compute_engine->engine_id());
         gpu_assert(key->key.is_valid());
+        if (!kernel_names.empty()) key->KernelName_ = kernel_names[0];
 
         cache_state_t kernel_cache_status;
         CHECK(get_cached_kernels<typename trivial_key_t<T>::value_type>(
