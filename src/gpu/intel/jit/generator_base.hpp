@@ -19,12 +19,24 @@
 
 #include "gpu/intel/compute/kernel.hpp"
 #include "gpu/intel/engine.hpp"
+#include <chrono>
 
 namespace dnnl {
 namespace impl {
 namespace gpu {
 namespace intel {
 namespace jit {
+    
+struct Record;
+struct RecordWrap
+{
+    std::chrono::high_resolution_clock::time_point TimeBegin;
+    Record& Rec;
+    RecordWrap(Record& rec) noexcept : TimeBegin(std::chrono::high_resolution_clock::now()), Rec(rec) { }
+    ~RecordWrap();
+    void AssignName(std::string name) noexcept;
+};
+extern RecordWrap PutNGenRecord(primitive_kind_t kind) noexcept;
 
 struct generator_base_t {
     virtual ~generator_base_t() = default;

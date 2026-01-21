@@ -161,6 +161,16 @@ status_t create_ocl_kernel_from_cache_blob(const engine_t *ocl_engine,
         }
         auto ocl_kernel = xpu::ocl::make_wrapper(
                 clCreateKernel(program, kernel_name.c_str(), &err));
+        if (err != CL_SUCCESS) {
+            size_t kernel_name_size = 0;
+            clGetProgramInfo(program, CL_PROGRAM_KERNEL_NAMES, 0, nullptr,
+                    &kernel_name_size);
+            std::string tmp(kernel_name_size, '\0');
+            clGetProgramInfo(program, CL_PROGRAM_KERNEL_NAMES, kernel_name_size,
+                    &tmp[0], nullptr);
+            printf("!!!kernel [%s] failed, available:[%s]\n",
+                    kernel_name.c_str(), tmp.c_str());
+        }
         OCL_CHECK(err);
         CHECK(kernel_t::make((*kernels)[i], std::move(ocl_kernel), {}));
     }

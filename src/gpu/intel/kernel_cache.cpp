@@ -69,8 +69,11 @@ status_t get_cached_kernels(std::shared_ptr<gpu_kernel_key_impl_t> &&key_impl,
                 const gpu_kernel_value_container_t<kernel_t> *>(value.impl())
                                          ->value;
         // As there is only one kernel, allow the kernel_name to be unspecified
-        if (kernel_names[0] && std::string(kernel_names[0]) != kernel.name())
+        if (kernel_names[0] && std::string(kernel_names[0]) != kernel.name()) {
+            printf("!!!!failed to get expected kernel,want [%s] get [%s]\n",
+                    kernel_names[0], kernel.name().c_str());
             return status::runtime_error;
+        }
 
         kernels[0] = kernel;
         return status::success;

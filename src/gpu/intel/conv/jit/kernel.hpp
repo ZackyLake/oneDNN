@@ -42,6 +42,11 @@ public:
         , prb_(cfg.prb())
         , cfg_(cfg) {
 
+        const uint32_t max_slm_size = compute::device_info_t::max_slm_size_per_tg(
+                convert_ngen_arch_to_dnnl(options().hw()),
+                ir_utils::safe_divide(into<int>(local_range.nelems()), options().simd()),
+                options().regs() > 128);
+
         // XXX: BWD_W does 32x32 multiplication in the inner loop which may cause
         // hangs when using with split barrier. Switch to emulation to work around
         // the issue.
@@ -49,13 +54,16 @@ public:
             force_emulate64();
 
         ir_utils::debug_profiler_t profile("Conv Kernel Construction Profile");
+        auto &record = ConvRecords::New(cfg);
         // Build IR for the kernel.
-        builder_t builder(cfg, kernel_info, zp_dst);
+        builder_t builder(cfg, kernel_info, zp_dst, max_slm_size);
         const stmt_t &body = builder.stmt();
         profile.stamp("Kernel Builder");
+        record.Stamp("0Kernel Builder");
         generate_from_ir(
                 body, &cfg_.plan().gemm_schedule.kernel_grid_walk_order());
         profile.stop("Generate Assembly");
+        record.Stamp("0Generate Assembly");
 
 #ifdef DNNL_DEV_MODE
         gpu_perf_no_trace() << profile;

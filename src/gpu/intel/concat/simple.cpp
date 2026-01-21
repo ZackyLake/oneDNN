@@ -317,6 +317,14 @@ static status_t init_conf_common(impl::engine_t *engine, const concat_pd_t *pd,
         simple_params_t &conf, simple_runtime_params_t &rt_conf) {
     using namespace utils;
     const memory_desc_t &ref_dst_md = *pd->dst_md();
+    
+    static const auto FixUninit = !CheckEnv("fixuninit", "false");
+    if (FixUninit)
+    {
+        for (uint32_t i = 0; i < std::size(conf.blocks); ++i)
+            conf.blocks[i] = conf.strides[i] = 0;
+        conf.bytes_per_workitem = 0;
+    }
 
     VDISPATCH_CONCAT_IC(ref_dst_md.format_kind == format_kind::blocked,
             VERBOSE_UNSUPPORTED_FORMAT_KIND);

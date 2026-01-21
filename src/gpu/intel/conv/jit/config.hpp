@@ -31,6 +31,12 @@
 #include "gpu/intel/jit/ir/walk_order.hpp"
 #include "gpu/intel/jit/utils/utils.hpp"
 
+#include <chrono>
+#include <deque>
+#include <string_view>
+#include <atomic>
+#include <thread>
+
 namespace dnnl {
 namespace impl {
 namespace gpu {
@@ -695,6 +701,49 @@ void prepare_zp_precompute(const problem_t &prb, dim_t *idhw, dim_t *odhw,
         dim_t *pdhw, dim_t *ddhw);
 std::array<tile_t, 3> get_kernel_grid_dims(const config_t &cfg);
 std::array<tile_t, 3> get_thread_group_grid_dims(const config_t &cfg);
+
+
+struct ConvRecord
+{
+    const config_t Config;
+    const std::thread::id Tid;
+    const std::chrono::high_resolution_clock::time_point BeginTime;
+    bool Finished = false;
+    std::vector<std::pair<const char *, uint64_t>> Times;
+    uint64_t GetElapseUS() const noexcept { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - BeginTime).count(); }
+    ConvRecord(const config_t &cfg) noexcept
+        : Config(cfg), Tid(std::this_thread::get_id()), BeginTime(std::chrono::high_resolution_clock::now())
+    {
+        Times.reserve(32);
+    }
+    void Stamp(const char* name) noexcept
+    {
+        auto us = GetElapseUS();
+        Times.emplace_back(name, us);
+    }
+};
+struct ConvRecords
+{
+    std::deque<ConvRecord> Records;
+    std::atomic_flag Lock = ATOMIC_FLAG_INIT;
+    ~ConvRecords();
+    static ConvRecord*& GetCurrent() noexcept
+    {
+        thread_local ConvRecord* Current = nullptr;
+        return Current;
+    }
+    static ConvRecord& New(const config_t &cfg) noexcept
+    {
+        static ConvRecords Host;
+        while (Host.Lock.test_and_set());
+        Host.Records.emplace_back(cfg);
+        auto& ret = Host.Records.back();
+        Host.Lock.clear();
+        GetCurrent() = &ret;
+        return ret;
+    }
+};
+
 
 } // namespace jit
 } // namespace conv

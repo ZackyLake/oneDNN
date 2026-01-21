@@ -18,10 +18,16 @@
 #define GPU_INTEL_JIT_GENERATOR_HPP
 
 #include <memory>
+#include <deque>
+#include <map>
+#include <thread>
+#include <chrono>
+#include <fstream>
 
 #include "ngen.hpp"
 #include "ngen_emulation.hpp"
 
+#include "common/utils.hpp"
 #include "common/impl_registration.hpp"
 #include "common/nstl.hpp"
 #include "gpu/intel/compute/device_info.hpp"
@@ -150,7 +156,12 @@ compute::kernel_t make_kernel(primitive_t *primitive, bool register_kernel,
         return kernel;
     }
 
+    auto rec = PutNGenRecord(primitive->kind());
+
     KernelT jit_kernel(std::forward<ArgsT>(args)...);
+    
+    rec.AssignName(jit_kernel.kernel_name());
+    
     status_t status = primitive->create_kernel(
             engine, &kernel, &jit_kernel, register_kernel);
     if (status != status::success) return compute::kernel_t();
